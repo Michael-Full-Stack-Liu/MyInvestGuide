@@ -1,0 +1,50 @@
+# Git Ignore File
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# DVC outputs (tracked by DVC, not Git)
+/data/intermediate/
+/models/*.pkl
+
+# AutoGluon models (large files, managed by MLflow/DVC)
+/models/autogluon/
+
+# System files
+.DS_Store
+Thumbs.db
+docs/
+
+# Logs
+*.log
+/congress_trading_2025-12-08.csv
+
+# =============================================================================
+# Docker & MLOps
+# =============================================================================
+docker/.env
+.env
+
+# MLflow artifacts 
+mlruns/
+mlartifacts/
+
+# Evidently reports
+reports/*.html
+reports/*.json
+
+# Docker 
+docker/data/
