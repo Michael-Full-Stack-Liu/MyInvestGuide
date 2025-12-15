@@ -1,0 +1,7 @@
+# This directory contains Evidently monitoring reports
+# Generated HTML and JSON reports will be stored here
+
+# Example files:
+# - data_drift_20251215.html
+# - data_drift_20251215.json
+# - model_performance_20251215.html

@@ -1,0 +1,5 @@
+outs:
+- md5: 02ed6c8469d35f03eccc95546217f17f
+  size: 9601284
+  hash: md5
+  path: congress_trading_2025-12-13.csv

@@ -1,0 +1,77 @@
+schema: '2.0'
+stages:
+  load_data:
+    cmd: python src/model/data_loader.py --data-dir . --output 
+      data/intermediate/01_raw_trades.parquet
+    deps:
+    - path: congress_trading_2025-12-13.csv
+      hash: md5
+      md5: 02ed6c8469d35f03eccc95546217f17f
+      size: 9601284
+    - path: src/model/data_loader.py
+      hash: md5
+      md5: ec7815da0ee699451a1a764dfc1650d5
+      size: 6445
+    outs:
+    - path: data/intermediate/01_raw_trades.parquet
+      hash: md5
+      md5: 5634208e1aba316d63fb3f643e4d463b
+      size: 3848929
+  clean_data:
+    cmd: python src/model/data_cleaner.py --input 
+      data/intermediate/01_raw_trades.parquet --output 
+      data/intermediate/02_cleaned_trades.parquet
+    deps:
+    - path: data/intermediate/01_raw_trades.parquet
+      hash: md5
+      md5: 5634208e1aba316d63fb3f643e4d463b
+      size: 3848929
+    - path: src/model/data_cleaner.py
+      hash: md5
+      md5: 6170a810db71b3f564d188f08667e07f
+      size: 4506
+    outs:
+    - path: data/intermediate/02_cleaned_trades.parquet
+      hash: md5
+      md5: eef8f1e28ce04f521be6609f686ae5e5
+      size: 3317503
+  engineer_features:
+    cmd: python src/model/feature_engineer.py --input 
+      data/intermediate/02_cleaned_trades.parquet --output 
+      data/intermediate/03_featured_trades.parquet
+    deps:
+    - path: data/intermediate/02_cleaned_trades.parquet
+      hash: md5
+      md5: eef8f1e28ce04f521be6609f686ae5e5
+      size: 3317503
+    - path: src/model/feature_engineer.py
+      hash: md5
+      md5: 4b8b2909815debfd2087e851f33ef0ad
+      size: 24448
+    outs:
+    - path: data/intermediate/03_featured_trades.parquet
+      hash: md5
+      md5: 994ec98527fcde6aa223b26e6f8c9478
+      size: 5145883
+  train_model:
+    cmd: python src/model/trainer.py --input 
+      data/intermediate/03_featured_trades.parquet --output 
+      models/baseline_model.pkl --metrics models/metrics.json
+    deps:
+    - path: data/intermediate/03_featured_trades.parquet
+      hash: md5
+      md5: 994ec98527fcde6aa223b26e6f8c9478
+      size: 5145883
+    - path: src/model/trainer.py
+      hash: md5
+      md5: ff6f48829088ed5126688176563a7e17
+      size: 17820
+    outs:
+    - path: models/baseline_model.pkl
+      hash: md5
+      md5: 2ca147f8fd7b884378fa44d10ef8c1f8
+      size: 1455060
+    - path: models/metrics.json
+      hash: md5
+      md5: fdd1986a2025c9cbcb543ee10115aacf
+      size: 1626

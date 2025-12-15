@@ -1,0 +1,78 @@
+# =============================================================================
+# Docker Compose Configuration for Congress Trading Prediction MLOps Stack
+# =============================================================================
+#
+# 使用方法:
+#   启动所有服务:     docker compose up -d
+#   启动单个服务:     docker compose up -d postgres
+#   查看日志:         docker compose logs -f [service_name]
+#   停止所有服务:     docker compose down
+#   停止并删除数据:   docker compose down -v
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # PostgreSQL Database
+  # ===========================================================================
+  # 用途: MLflow 元数据存储
+  # 端口: 5432
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: congress_postgres
+    restart: unless-stopped
+
+    # 端口映射: 主机端口:容器端口
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    # 环境变量
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mlflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlflow_password}
+      POSTGRES_DB: ${POSTGRES_DB:-mlflow_db}
+      # 设置时区
+      TZ: America/Los_Angeles
+
+    # 数据持久化
+    volumes:
+      # PostgreSQL 数据目录
+      - postgres_data:/var/lib/postgresql/data
+      # 初始化脚本 (仅首次启动时执行)
+      - ./init-db:/docker-entrypoint-initdb.d
+
+    # 健康检查
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mlflow} -d ${POSTGRES_DB:-mlflow_db}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    # 网络
+    networks:
+      - mlops_network
+
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# =============================================================================
+# 数据卷定义
+# =============================================================================
+volumes:
+  postgres_data:
+    name: congress_postgres_data
+    driver: local
+
+# =============================================================================
+# 网络定义
+# =============================================================================
+networks:
+  mlops_network:
+    name: congress_mlops_network
+    driver: bridge

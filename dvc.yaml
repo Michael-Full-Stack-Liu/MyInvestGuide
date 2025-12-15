@@ -1,0 +1,44 @@
+# DVC Pipeline Configuration
+# Run: dvc repro (to execute the full pipeline)
+# Run: dvc repro <stage_name> (to execute a specific stage)
+
+stages:
+  # Stage 1: Load raw data from CSV
+  load_data:
+    cmd: python src/model/data_loader.py --data-dir . --output data/intermediate/01_raw_trades.parquet
+    deps:
+      - src/model/data_loader.py
+      - congress_trading_2025-12-13.csv
+    outs:
+      - data/intermediate/01_raw_trades.parquet
+
+  # Stage 2: Clean and validate data (Point-in-Time)
+  clean_data:
+    cmd: python src/model/data_cleaner.py --input data/intermediate/01_raw_trades.parquet --output data/intermediate/02_cleaned_trades.parquet
+    deps:
+      - src/model/data_cleaner.py
+      - data/intermediate/01_raw_trades.parquet
+    outs:
+      - data/intermediate/02_cleaned_trades.parquet
+
+  # Stage 3: Feature engineering (78 features, no Alpha leakage)
+  engineer_features:
+    cmd: python src/model/feature_engineer.py --input data/intermediate/02_cleaned_trades.parquet --output data/intermediate/03_featured_trades.parquet
+    deps:
+      - src/model/feature_engineer.py
+      - data/intermediate/02_cleaned_trades.parquet
+    outs:
+      - data/intermediate/03_featured_trades.parquet
+
+  # Stage 4: Train AutoGluon model (best_quality, 2 hours)
+  train_model:
+    cmd: python src/model/trainer_autogluon.py --input data/intermediate/03_featured_trades.parquet --output-dir models/autogluon --metrics models/autogluon_metrics.json
+    deps:
+      - src/model/trainer_autogluon.py
+      - data/intermediate/03_featured_trades.parquet
+    outs:
+      - models/autogluon:
+          persist: true
+    metrics:
+      - models/autogluon_metrics.json:
+          cache: false
