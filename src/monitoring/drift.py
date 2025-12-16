@@ -1,54 +1,69 @@
 """
 Data Drift Monitoring using Evidently
-Simple module for detecting distribution changes between datasets.
+Detects distribution changes between reference and current data.
 
 Usage:
-    from monitoring.drift import check_drift, generate_drift_report
+    from src.monitoring.drift import check_drift, generate_drift_report
     
-    # Quick check
-    is_drifted, metrics = check_drift(reference_df, current_df)
+    # Using file paths
+    is_drifted, metrics = check_drift("data/train.parquet", "data/new.csv")
+    generate_drift_report("data/train.parquet", "data/new.csv", "reports/drift.html")
     
-    # Generate HTML report
-    generate_drift_report(reference_df, current_df, "reports/drift.html")
+    # Or using DataFrames
+    is_drifted, metrics = check_drift(train_df, new_df)
 """
 
 import pandas as pd
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Union
+from pathlib import Path
 
 from evidently import Report
 from evidently.presets import DataDriftPreset
 
 
+def _load_data(data: Union[str, Path, pd.DataFrame]) -> pd.DataFrame:
+    """Load data from file path or return DataFrame as-is."""
+    if isinstance(data, pd.DataFrame):
+        return data
+    
+    path = str(data)
+    if path.endswith('.parquet'):
+        return pd.read_parquet(path)
+    elif path.endswith('.csv'):
+        return pd.read_csv(path)
+    else:
+        raise ValueError(f"Unsupported file format: {path}")
+
+
 def check_drift(
-    reference: pd.DataFrame,
-    current: pd.DataFrame,
+    reference: Union[str, pd.DataFrame],
+    current: Union[str, pd.DataFrame],
     columns: List[str] = None
 ) -> Tuple[bool, Dict]:
     """
-    Check for data drift between reference and current datasets.
+    Check for data drift between reference and current data.
     
     Args:
-        reference: Training/baseline data
-        current: New data to compare
+        reference: Training data (file path or DataFrame)
+        current: New data to compare (file path or DataFrame)
         columns: Specific columns to check (default: all)
         
     Returns:
         Tuple of (is_drifted, metrics_dict)
     """
+    ref = _load_data(reference)
+    cur = _load_data(current)
+    
     # Select columns if specified
     if columns:
-        ref = reference[columns].copy()
-        cur = current[[c for c in columns if c in current.columns]].copy()
-    else:
-        ref = reference.copy()
-        cur = current.copy()
+        ref = ref[[c for c in columns if c in ref.columns]]
+        cur = cur[[c for c in columns if c in cur.columns]]
     
     # Run drift report
     report = Report([DataDriftPreset()])
     result = report.run(current_data=cur, reference_data=ref)
     
     # Extract metrics
-    result_dict = result.dict()
     metrics = {
         'dataset_drift': False,
         'drift_share': 0.0,
@@ -56,16 +71,14 @@ def check_drift(
         'n_columns': 0
     }
     
-    for metric in result_dict.get('metrics', []):
+    for metric in result.dict().get('metrics', []):
         metric_result = metric.get('result', {})
         if 'dataset_drift' in metric_result:
             metrics['dataset_drift'] = metric_result.get('dataset_drift', False)
             metrics['drift_share'] = metric_result.get('drift_share', 0.0)
             metrics['n_columns'] = metric_result.get('number_of_columns', 0)
             
-            # Get drifted columns
-            drift_by_col = metric_result.get('drift_by_columns', {})
-            for col, info in drift_by_col.items():
+            for col, info in metric_result.get('drift_by_columns', {}).items():
                 if info.get('drift_detected', False):
                     metrics['drifted_columns'].append(col)
     
@@ -73,37 +86,37 @@ def check_drift(
 
 
 def generate_drift_report(
-    reference: pd.DataFrame,
-    current: pd.DataFrame,
+    reference: Union[str, pd.DataFrame],
+    current: Union[str, pd.DataFrame],
     output_path: str,
     columns: List[str] = None
 ) -> str:
     """
-    Generate and save a drift report.
+    Generate and save a drift report as HTML.
     
     Args:
-        reference: Training/baseline data  
-        current: New data to compare
+        reference: Training data (file path or DataFrame)
+        current: New data to compare (file path or DataFrame)
         output_path: Path to save HTML report
         columns: Specific columns to check (default: all)
         
     Returns:
         Path to saved report
     """
-    # Select columns if specified
-    if columns:
-        ref = reference[columns].copy()
-        cur = current[[c for c in columns if c in current.columns]].copy()
-    else:
-        ref = reference.copy()
-        cur = current.copy()
+    ref = _load_data(reference)
+    cur = _load_data(current)
     
-    # Run and save report
+    if columns:
+        ref = ref[[c for c in columns if c in ref.columns]]
+        cur = cur[[c for c in columns if c in cur.columns]]
+    
     report = Report([DataDriftPreset()])
     result = report.run(current_data=cur, reference_data=ref)
+    
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     result.save_html(output_path)
     
-    print(f"[Drift] Report saved to: {output_path}")
+    print(f"[Drift] Report saved: {output_path}")
     return output_path
 
 
@@ -112,21 +125,14 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Check data drift")
-    parser.add_argument("--reference", required=True, help="Reference parquet file")
-    parser.add_argument("--current", required=True, help="Current parquet/csv file")  
+    parser.add_argument("--reference", required=True)
+    parser.add_argument("--current", required=True)
     parser.add_argument("--output", default="reports/drift_report.html")
     args = parser.parse_args()
     
-    # Load data
-    ref_df = pd.read_parquet(args.reference)
-    cur_df = pd.read_csv(args.current) if args.current.endswith('.csv') else pd.read_parquet(args.current)
+    is_drifted, metrics = check_drift(args.reference, args.current)
+    print(f"\nDrift detected: {is_drifted}")
+    print(f"Drift share: {metrics['drift_share']:.1%}")
+    print(f"Drifted columns: {metrics['drifted_columns']}")
     
-    # Check drift
-    is_drifted, metrics = check_drift(ref_df, cur_df)
-    
-    print(f"\nDataset Drift: {is_drifted}")
-    print(f"Drift Share: {metrics['drift_share']:.1%}")
-    print(f"Drifted Columns: {metrics['drifted_columns']}")
-    
-    # Save report
-    generate_drift_report(ref_df, cur_df, args.output)
+    generate_drift_report(args.reference, args.current, args.output)
