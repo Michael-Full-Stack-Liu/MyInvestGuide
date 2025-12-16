@@ -481,12 +481,14 @@ def create_target(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
-# MASTER FUNCTION
+# MASTER FUNCTIONS
 # ============================================================
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Master function: Apply all feature engineering steps."""
-    
+    """
+    Master function: Apply all feature engineering steps.
+    Used for TRAINING (includes Target creation).
+    """
     df = create_basic_features(df)
     df = create_amount_features(df)
     df = create_time_features(df)
@@ -501,6 +503,52 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df = create_target(df)
     
     return df
+
+
+def engineer_features_for_prediction(df: pd.DataFrame, historical_df: pd.DataFrame = None) -> pd.DataFrame:
+    """
+    Apply feature engineering for PREDICTION (no Target creation).
+    
+    Args:
+        df: New trades to predict (cleaned data)
+        historical_df: Historical training data for lag features (optional)
+        
+    Returns:
+        DataFrame with all features ready for model prediction
+    """
+    print("[Features] Engineering features for prediction...")
+    
+    # If historical data provided, combine for proper lag feature calculation
+    if historical_df is not None:
+        # Mark rows
+        df['_is_new'] = True
+        historical_df['_is_new'] = False
+        
+        # Combine
+        combined = pd.concat([historical_df, df], ignore_index=True)
+        combined = combined.sort_values('Notification Date').reset_index(drop=True)
+    else:
+        combined = df.copy()
+        combined['_is_new'] = True
+    
+    # Apply feature engineering (without Target)
+    combined = create_basic_features(combined)
+    combined = create_amount_features(combined)
+    combined = create_time_features(combined)
+    combined = create_price_features(combined)
+    combined = create_historical_features(combined)
+    combined = create_signal_features(combined)
+    combined = create_owner_features(combined)
+    combined = create_interaction_features(combined)
+    combined = create_politician_lag_features(combined)
+    combined = create_ticker_lag_features(combined)
+    combined = create_market_lag_features(combined)
+    
+    # Extract only new rows
+    result = combined[combined['_is_new'] == True].drop(columns=['_is_new'])
+    
+    print(f"[Features] Created {len(result)} rows with features")
+    return result
 
 
 # ============================================================

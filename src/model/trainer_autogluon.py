@@ -1,23 +1,27 @@
 """
 AutoGluon Trainer for Congress Trading Prediction
 Uses AutoGluon's TabularPredictor for automatic model selection and tuning.
+Integrated with MLflow for experiment tracking.
 
 Usage:
     python trainer_autogluon.py
     python trainer_autogluon.py --time-limit 600  # 10 minutes
-    python trainer_autogluon.py --preset best_quality  # Higher quality but slower
+    python trainer_autogluon.py --preset best_quality
 
 Output:
     models/autogluon/  - AutoGluon model artifacts
     models/autogluon_metrics.json - Evaluation metrics
+    MLflow UI: http://localhost:5000
 """
 import pandas as pd
 import numpy as np
 import argparse
 import os
 import json
+import requests
 from datetime import datetime
 
+import mlflow
 from autogluon.tabular import TabularPredictor
 
 import warnings
@@ -27,8 +31,10 @@ warnings.filterwarnings('ignore')
 DEFAULT_INPUT_PATH = "data/intermediate/03_featured_trades.parquet"
 DEFAULT_OUTPUT_DIR = "models/autogluon"
 DEFAULT_METRICS_PATH = "models/autogluon_metrics.json"
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+MLFLOW_EXPERIMENT_NAME = "congress-trading-autogluon"
 
-# 78 Features - NO Alpha leakage (same as trainer.py)
+# 78 Features - NO Alpha leakage
 FEATURE_COLS = [
     # === Basic Features (19) ===
     'Politician_ID', 'Is_Republican', 'Is_Senate', 'State_ID',
@@ -78,6 +84,15 @@ FEATURE_COLS = [
 ]
 
 TARGET_COL = 'Target'
+
+
+def check_mlflow_connection() -> bool:
+    """Check if MLflow server is accessible."""
+    try:
+        response = requests.get(f"{MLFLOW_TRACKING_URI}/health", timeout=5)
+        return response.status_code == 200
+    except Exception:
+        return False
 
 
 def get_available_features(df: pd.DataFrame) -> list:
@@ -155,7 +170,8 @@ if __name__ == "__main__":
     parser.add_argument("--input", type=str, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--metrics", type=str, default=DEFAULT_METRICS_PATH)
-    parser.add_argument("--time-limit", type=int, default=7200, help="Training time limit in seconds (default: 7200 = 2 hours)")
+    parser.add_argument("--time-limit", type=int, default=7200, 
+                        help="Training time limit in seconds (default: 7200 = 2 hours)")
     parser.add_argument("--preset", type=str, default="best_quality", 
                         choices=["best_quality", "high_quality", "good_quality", "medium_quality"],
                         help="AutoGluon preset")
@@ -169,122 +185,183 @@ if __name__ == "__main__":
     print(f"[AutoGluon] Time limit: {args.time_limit} seconds")
     print(f"[AutoGluon] Preset: {args.preset}")
     
-    # 1. Load data
-    df = pd.read_parquet(args.input)
-    print(f"\n[AutoGluon] Read {len(df)} rows from {args.input}")
+    # Check MLflow connection
+    if not check_mlflow_connection():
+        print(f"[MLflow] ERROR: Cannot connect to {MLFLOW_TRACKING_URI}")
+        print("[MLflow] Please ensure MLflow server is running:")
+        print("         cd docker && docker compose up -d mlflow")
+        exit(1)
     
-    # 2. Get available features
-    feature_cols = get_available_features(df)
+    print(f"[MLflow] Connected to {MLFLOW_TRACKING_URI}")
     
-    # 3. Prepare data
-    df_clean = df.dropna(subset=feature_cols + [TARGET_COL])
-    print(f"[AutoGluon] After dropping NaN: {len(df_clean)} rows")
+    # Setup MLflow
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
     
-    # Target distribution
-    target_dist = df_clean[TARGET_COL].value_counts().sort_index()
-    print(f"\n[AutoGluon] Target distribution:")
-    for cls, count in target_dist.items():
-        print(f"  Class {cls}: {count} ({100*count/len(df_clean):.1f}%)")
+    run_name = f"autogluon_{args.preset}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    # 4. Time-series split (80/20)
-    df_clean = df_clean.sort_values('Notification Date').reset_index(drop=True)
-    split_idx = int(len(df_clean) * 0.8)
-    
-    train_df = df_clean.iloc[:split_idx]
-    test_df = df_clean.iloc[split_idx:]
-    
-    print(f"\n[AutoGluon] Train: {len(train_df)}, Test: {len(test_df)}")
-    
-    # 5. Prepare AutoGluon format
-    train_data = train_df[feature_cols + [TARGET_COL]]
-    test_data = test_df[feature_cols + [TARGET_COL]]
-    
-    # 6. Train with AutoGluon
-    print(f"\n[AutoGluon] Training started...")
-    print(f"[AutoGluon] This will try multiple models: GBM, XGBoost, LightGBM, CatBoost, RF, NN, etc.")
-    
-    predictor = TabularPredictor(
-        label=TARGET_COL,
-        path=args.output_dir,
-        problem_type='multiclass',
-        eval_metric='roc_auc_ovo_macro',  # Multi-class AUC
-    ).fit(
-        train_data=train_data,
-        time_limit=args.time_limit,
-        presets=args.preset,
-        verbosity=2,
-    )
-    
-    # 7. Evaluate
-    print(f"\n[AutoGluon] Evaluating on test set...")
-    
-    # Get predictions
-    y_pred = predictor.predict(test_data.drop(columns=[TARGET_COL]))
-    y_test = test_data[TARGET_COL]
-    
-    # Leaderboard
-    leaderboard = predictor.leaderboard(test_data, silent=True)
-    print(f"\n[AutoGluon] === MODEL LEADERBOARD ===")
-    print(leaderboard.to_string())
-    
-    # Feature importance
-    print(f"\n[AutoGluon] === FEATURE IMPORTANCE (Top 15) ===")
-    try:
-        importance = predictor.feature_importance(test_data)
-        print(importance.head(15).to_string())
-    except:
-        print("Feature importance not available")
-    
-    # Get evaluation metrics
-    eval_results = predictor.evaluate(test_data)
-    print(f"\n[AutoGluon] === EVALUATION RESULTS ===")
-    for metric, value in eval_results.items():
-        print(f"  {metric}: {value:.4f}")
-    
-    # Backtest metrics
-    backtest = calculate_backtest_metrics(test_df, y_pred.values)
-    
-    print(f"\n[AutoGluon] === BACKTEST RESULTS ===")
-    print(f"  --- All Positive Predictions (Class >= 1) ---")
-    print(f"  Trades:              {backtest['backtest_trades']}")
-    print(f"  Avg Alpha (180d):    {backtest['backtest_avg_alpha']*100:.2f}%")
-    print(f"  Information Ratio:   {backtest['backtest_information_ratio']:.4f}")
-    print(f"  Win Rate:            {backtest['backtest_win_rate']:.2%}")
-    
-    print(f"\n  --- High Conviction (Class >= 2) ---")
-    print(f"  Trades:              {backtest['backtest_high_trades']}")
-    if backtest['backtest_high_trades'] > 0:
-        print(f"  Avg Alpha (180d):    {backtest['backtest_high_avg_alpha']*100:.2f}%")
-        print(f"  Information Ratio:   {backtest['backtest_high_information_ratio']:.4f}")
-        print(f"  Win Rate:            {backtest['backtest_high_win_rate']:.2%}")
-    
-    print(f"\n  --- Very High Conviction (Class >= 3) ---")
-    print(f"  Trades:              {backtest['backtest_very_high_trades']}")
-    if backtest['backtest_very_high_trades'] > 0:
-        print(f"  Avg Alpha (180d):    {backtest['backtest_very_high_avg_alpha']*100:.2f}%")
-        print(f"  Information Ratio:   {backtest['backtest_very_high_information_ratio']:.4f}")
-        print(f"  Win Rate:            {backtest['backtest_very_high_win_rate']:.2%}")
-    
-    # 8. Save metrics
-    metrics = {
-        'train_size': len(train_df),
-        'test_size': len(test_df),
-        'num_features': len(feature_cols),
-        'time_limit': args.time_limit,
-        'preset': args.preset,
-        'evaluation': eval_results,
-        'backtest': backtest,
-        'best_model': predictor.model_best,
-        'train_date': datetime.now().isoformat(),
-    }
-    
-    # Add leaderboard
-    metrics['leaderboard'] = leaderboard.to_dict('records')
-    
-    with open(args.metrics, 'w') as f:
-        json.dump(metrics, f, indent=2, default=str)
-    
-    print(f"\n[AutoGluon] Model saved to: {args.output_dir}")
-    print(f"[AutoGluon] Metrics saved to: {args.metrics}")
-    print(f"[AutoGluon] Best model: {predictor.model_best}")
-    print("[AutoGluon] Complete.\n")
+    with mlflow.start_run(run_name=run_name):
+        # Set tags
+        mlflow.set_tag("model_type", "autogluon")
+        mlflow.set_tag("preset", args.preset)
+        
+        # 1. Load data
+        df = pd.read_parquet(args.input)
+        print(f"\n[AutoGluon] Read {len(df)} rows from {args.input}")
+        
+        # 2. Get available features
+        feature_cols = get_available_features(df)
+        
+        # 3. Prepare data
+        df_clean = df.dropna(subset=feature_cols + [TARGET_COL])
+        print(f"[AutoGluon] After dropping NaN: {len(df_clean)} rows")
+        
+        # Target distribution
+        target_dist = df_clean[TARGET_COL].value_counts().sort_index()
+        print(f"\n[AutoGluon] Target distribution:")
+        for cls, count in target_dist.items():
+            print(f"  Class {cls}: {count} ({100*count/len(df_clean):.1f}%)")
+        
+        # 4. Time-series split (80/20)
+        df_clean = df_clean.sort_values('Notification Date').reset_index(drop=True)
+        split_idx = int(len(df_clean) * 0.8)
+        
+        train_df = df_clean.iloc[:split_idx]
+        test_df = df_clean.iloc[split_idx:]
+        
+        print(f"\n[AutoGluon] Train: {len(train_df)}, Test: {len(test_df)}")
+        
+        # Log parameters
+        mlflow.log_params({
+            "input_path": args.input,
+            "time_limit": args.time_limit,
+            "preset": args.preset,
+            "num_features": len(feature_cols),
+            "train_size": len(train_df),
+            "test_size": len(test_df),
+            "total_rows": len(df),
+            "clean_rows": len(df_clean),
+            "target_classes": len(target_dist),
+        })
+        
+        # 5. Prepare AutoGluon format
+        train_data = train_df[feature_cols + [TARGET_COL]]
+        test_data = test_df[feature_cols + [TARGET_COL]]
+        
+        # 6. Train with AutoGluon
+        print(f"\n[AutoGluon] Training started...")
+        print(f"[AutoGluon] This will try multiple models: GBM, XGBoost, LightGBM, CatBoost, RF, NN, etc.")
+        
+        predictor = TabularPredictor(
+            label=TARGET_COL,
+            path=args.output_dir,
+            problem_type='multiclass',
+            eval_metric='roc_auc_ovo_macro',
+        ).fit(
+            train_data=train_data,
+            time_limit=args.time_limit,
+            presets=args.preset,
+            verbosity=2,
+        )
+        
+        # 7. Evaluate
+        print(f"\n[AutoGluon] Evaluating on test set...")
+        
+        y_pred = predictor.predict(test_data.drop(columns=[TARGET_COL]))
+        y_test = test_data[TARGET_COL]
+        
+        # Leaderboard
+        leaderboard = predictor.leaderboard(test_data, silent=True)
+        print(f"\n[AutoGluon] === MODEL LEADERBOARD ===")
+        print(leaderboard.to_string())
+        
+        # Feature importance
+        print(f"\n[AutoGluon] === FEATURE IMPORTANCE (Top 15) ===")
+        try:
+            importance = predictor.feature_importance(test_data)
+            print(importance.head(15).to_string())
+        except:
+            importance = None
+            print("Feature importance not available")
+        
+        # Get evaluation metrics
+        eval_results = predictor.evaluate(test_data)
+        print(f"\n[AutoGluon] === EVALUATION RESULTS ===")
+        for metric, value in eval_results.items():
+            print(f"  {metric}: {value:.4f}")
+        
+        # Backtest metrics
+        backtest = calculate_backtest_metrics(test_df, y_pred.values)
+        
+        print(f"\n[AutoGluon] === BACKTEST RESULTS ===")
+        print(f"  --- All Positive Predictions (Class >= 1) ---")
+        print(f"  Trades:              {backtest['backtest_trades']}")
+        print(f"  Avg Alpha (180d):    {backtest['backtest_avg_alpha']*100:.2f}%")
+        print(f"  Information Ratio:   {backtest['backtest_information_ratio']:.4f}")
+        print(f"  Win Rate:            {backtest['backtest_win_rate']:.2%}")
+        
+        print(f"\n  --- High Conviction (Class >= 2) ---")
+        print(f"  Trades:              {backtest['backtest_high_trades']}")
+        if backtest['backtest_high_trades'] > 0:
+            print(f"  Avg Alpha (180d):    {backtest['backtest_high_avg_alpha']*100:.2f}%")
+            print(f"  Information Ratio:   {backtest['backtest_high_information_ratio']:.4f}")
+            print(f"  Win Rate:            {backtest['backtest_high_win_rate']:.2%}")
+        
+        print(f"\n  --- Very High Conviction (Class >= 3) ---")
+        print(f"  Trades:              {backtest['backtest_very_high_trades']}")
+        if backtest['backtest_very_high_trades'] > 0:
+            print(f"  Avg Alpha (180d):    {backtest['backtest_very_high_avg_alpha']*100:.2f}%")
+            print(f"  Information Ratio:   {backtest['backtest_very_high_information_ratio']:.4f}")
+            print(f"  Win Rate:            {backtest['backtest_very_high_win_rate']:.2%}")
+        
+        # Log metrics to MLflow
+        for metric, value in eval_results.items():
+            if isinstance(value, (int, float)):
+                mlflow.log_metric(f"eval_{metric}", value)
+        
+        mlflow.log_metrics({
+            "backtest_trades": backtest['backtest_trades'],
+            "backtest_avg_alpha": backtest['backtest_avg_alpha'],
+            "backtest_information_ratio": backtest['backtest_information_ratio'],
+            "backtest_win_rate": backtest['backtest_win_rate'],
+            "backtest_high_trades": backtest['backtest_high_trades'],
+            "backtest_high_avg_alpha": backtest['backtest_high_avg_alpha'],
+        })
+        
+        # Log artifacts
+        mlflow.log_artifacts(args.output_dir, "autogluon_model")
+        
+        # Log leaderboard as JSON
+        mlflow.log_dict(leaderboard.to_dict('records'), "leaderboard.json")
+        
+        if importance is not None:
+            mlflow.log_dict(importance.to_dict(), "feature_importance.json")
+        
+        # Get run info
+        run_id = mlflow.active_run().info.run_id
+        
+        # 8. Save metrics locally
+        metrics = {
+            'train_size': len(train_df),
+            'test_size': len(test_df),
+            'num_features': len(feature_cols),
+            'time_limit': args.time_limit,
+            'preset': args.preset,
+            'evaluation': eval_results,
+            'backtest': backtest,
+            'best_model': predictor.model_best,
+            'train_date': datetime.now().isoformat(),
+            'mlflow_run_id': run_id,
+        }
+        
+        metrics['leaderboard'] = leaderboard.to_dict('records')
+        
+        with open(args.metrics, 'w') as f:
+            json.dump(metrics, f, indent=2, default=str)
+        
+        print(f"\n[AutoGluon] Model saved to: {args.output_dir}")
+        print(f"[AutoGluon] Metrics saved to: {args.metrics}")
+        print(f"[AutoGluon] Best model: {predictor.model_best}")
+        print(f"[MLflow] Run ID: {run_id}")
+        print(f"[MLflow] View at: {MLFLOW_TRACKING_URI}")
+        print("[AutoGluon] Complete.\n")
