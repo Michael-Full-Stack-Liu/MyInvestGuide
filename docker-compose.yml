@@ -1,0 +1,242 @@
+# =============================================================================
+# Docker Compose Configuration for Congress Trading Prediction MLOps Stack
+# =============================================================================
+#
+# 使用方法:
+#   启动推理服务:     docker compose up -d          (只启动 postgres + api)
+#   启动训练环境:     docker compose --profile train up -d  (包含 mlflow)
+#   运行训练:         docker compose --profile train run train
+#   查看日志:         docker compose logs -f [service_name]
+#   停止所有服务:     docker compose down
+#   停止并删除数据:   docker compose down -v
+#
+# 服务说明:
+#   - postgres: 数据库，存储预测日志和 drift 历史 (推理必需)
+#   - api: 预测 API 服务 (推理必需)
+#   - mlflow: 实验追踪服务 (仅训练时需要, profile: train)
+#   - train: 训练容器 (按需运行, profile: train)
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # PostgreSQL Database
+  # ===========================================================================
+  # 用途: MLflow 元数据存储
+  # 端口: 5432
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: congress_postgres_predict
+    restart: unless-stopped
+
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mlflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlflow_password}
+      POSTGRES_DB: ${POSTGRES_DB:-mlflow_db}
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mlflow} -d ${POSTGRES_DB:-mlflow_db}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    networks:
+      - mlops_network
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===========================================================================
+  # MLflow Tracking Server
+  # ===========================================================================
+  # 用途: 实验追踪、模型版本管理、Model Registry
+  # UI: http://localhost:5000
+  #
+  # 注意: 此服务只在训练时需要，正常推理不需要启动
+  # 启动方式: docker compose --profile train up -d mlflow
+  # ===========================================================================
+  mlflow:
+    image: congress-trading-predict/mlflow:v1.0
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    container_name: congress_mlflow
+    restart: unless-stopped
+    profiles:
+      - train
+      - mlflow
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow_password}@postgres:5432/${POSTGRES_DB:-mlflow_db}
+      MLFLOW_ARTIFACTS_DESTINATION: /mlflow/artifacts
+
+    volumes:
+      - ./mlruns:/mlflow/artifacts
+
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow_password}@postgres:5432/${POSTGRES_DB:-mlflow_db} --default-artifact-root /mlflow/artifacts --serve-artifacts
+
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    networks:
+      - mlops_network
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===========================================================================
+  # DVC Training Pipeline
+  # ===========================================================================
+  # 用途: 运行 DVC 管道进行模型训练
+  # 运行: docker compose --profile train run train
+  #
+  # 训练完成后会自动:
+  #   1. 保存 AutoGluon 模型到 models/autogluon/
+  #   2. 注册 MLflow-wrapped 模型到 Model Registry
+  # ===========================================================================
+  train:
+    image: congress-trading-predict/train:v1.0
+    build:
+      context: .
+      dockerfile: Dockerfile.train
+    container_name: congress_train
+    profiles:
+      - train
+
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: congress-trading-autogluon
+
+    volumes:
+      # 数据文件（输入）
+      - ./congress_trading_2025-12-13.csv:/app/congress_trading_2025-12-13.csv:ro
+      # 中间数据和模型（输出）
+      - ./data/intermediate:/app/data/intermediate
+      - ./models:/app/models
+      # DVC 缓存
+      - ./.dvc/cache:/app/.dvc/cache
+
+    networks:
+      - mlops_network
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===========================================================================
+  # Prediction API Service
+  # ===========================================================================
+  # 用途: 模型预测 REST API
+  # UI: http://localhost:8000/docs
+  #
+  # 功能:
+  #   - MLflow/AutoGluon 模型预测
+  #   - PostgreSQL 存储预测日志和 drift 历史
+  #   - 定时 drift 检测
+  # ===========================================================================
+  api:
+    image: congress-trading-predict/api:v1.0
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: congress_api
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    ports:
+      - "8000:8000"
+
+    environment:
+      # Database connection
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow_password}@postgres:5432/${POSTGRES_DB:-mlflow_db}
+      USE_DATABASE: "true"
+      # Model paths (MLflow model takes priority)
+      MODEL_PATH: /app/models/autogluon
+      MLFLOW_MODEL_PATH: /app/models/mlflow_model
+      # Reference data for drift detection
+      REFERENCE_DATA_PATH: /app/data/intermediate/01_raw_trades.parquet
+      # Drift monitoring settings
+      DRIFT_CHECK_INTERVAL_DAYS: ${DRIFT_CHECK_INTERVAL_DAYS:-7}
+      DRIFT_THRESHOLD: ${DRIFT_THRESHOLD:-0.3}
+      # W&B alerting (optional - requires paid plan)
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      WANDB_PROJECT: ${WANDB_PROJECT:-congress-trading-monitor}
+      WANDB_ALERTS_ENABLED: "false"
+      # Telegram alerting (recommended - free!)
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      # Suppress AutoGluon model mismatch warnings (Windows->Linux, Python version)
+      AUTOGLUON_SUPPRESS_WARNINGS: "true"
+
+    volumes:
+      - ./models:/app/models:ro
+      - ./data/intermediate:/app/data/intermediate:ro
+      - ./reports:/app/reports
+
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    networks:
+      - mlops_network
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# =============================================================================
+# 数据卷定义
+# =============================================================================
+volumes:
+  postgres_data:
+    name: congress_postgres_data_predict
+    driver: local
+
+# =============================================================================
+# 网络定义
+# =============================================================================
+networks:
+  mlops_network:
+    name: congress_mlops_network
+    driver: bridge

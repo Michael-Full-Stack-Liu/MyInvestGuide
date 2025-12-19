@@ -71,7 +71,32 @@ def check_drift(
         'n_columns': 0
     }
     
-    for metric in result.dict().get('metrics', []):
+    # Parse result - support both old and new Evidently API versions
+    result_dict = result.dict()
+    
+    for metric in result_dict.get('metrics', []):
+        metric_name = metric.get('metric_name', '')
+        
+        # New Evidently 0.7.x API format
+        if 'DriftedColumnsCount' in metric_name:
+            value = metric.get('value', {})
+            if isinstance(value, dict):
+                metrics['drift_share'] = value.get('share', 0.0)
+                metrics['n_columns'] = int(value.get('count', 0))
+                metrics['dataset_drift'] = metrics['drift_share'] > 0.5  # Default threshold
+        
+        elif 'ValueDrift' in metric_name:
+            # Check if column drifted (p-value < threshold means drift)
+            config = metric.get('config', {})
+            column = config.get('column', '')
+            threshold = config.get('threshold', 0.05)
+            p_value = metric.get('value', 1.0)
+            
+            if p_value is not None and p_value < threshold:
+                if column and column not in metrics['drifted_columns']:
+                    metrics['drifted_columns'].append(column)
+        
+        # Old Evidently API format (fallback)
         metric_result = metric.get('result', {})
         if 'dataset_drift' in metric_result:
             metrics['dataset_drift'] = metric_result.get('dataset_drift', False)
@@ -80,7 +105,14 @@ def check_drift(
             
             for col, info in metric_result.get('drift_by_columns', {}).items():
                 if info.get('drift_detected', False):
-                    metrics['drifted_columns'].append(col)
+                    if col not in metrics['drifted_columns']:
+                        metrics['drifted_columns'].append(col)
+    
+    # Calculate drift_share from drifted columns if not set
+    if metrics['drift_share'] == 0.0 and len(cur.columns) > 0:
+        metrics['drift_share'] = len(metrics['drifted_columns']) / len(cur.columns)
+        metrics['n_columns'] = len(cur.columns)
+        metrics['dataset_drift'] = metrics['drift_share'] > 0.5
     
     return metrics['dataset_drift'], metrics
 

@@ -1,0 +1,41 @@
+# Dockerfile for Training Pipeline
+# Standalone image - no base image dependency
+# Runs DVC pipeline with MLflow integration
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    curl \
+    cargo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+# Install CPU-only PyTorch FIRST (avoids downloading 2.5GB CUDA version + 5GB NVIDIA libs)
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+COPY requirements.txt .
+# Install remaining dependencies (torch/torchvision already satisfied)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy DVC configuration
+COPY dvc.yaml .
+COPY dvc.lock .
+COPY .dvc/ ./.dvc/
+
+# Copy source code
+COPY src/ ./src/
+
+# Create directories
+RUN mkdir -p data/intermediate models
+
+# Environment variables
+ENV MLFLOW_TRACKING_URI=http://mlflow:5000
+ENV MLFLOW_EXPERIMENT_NAME=congress-trading-autogluon
+
+# Default command: run DVC pipeline
+CMD ["dvc", "repro"]

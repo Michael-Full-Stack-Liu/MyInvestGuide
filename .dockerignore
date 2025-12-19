@@ -1,0 +1,54 @@
+# =============================================================================
+# Docker Build Ignore
+# =============================================================================
+# 排除这些文件/目录，减少 Docker build context 大小
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data files (will be mounted as volumes)
+data/
+models/
+mlruns/
+reports/
+*.csv
+*.parquet
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+
+# DVC (keep config, exclude cache and tmp)
+.dvc/cache/
+.dvc/tmp/
+*.dvc
+!.dvc/config
+!.dvc/.gitignore
+
+# Documentation
+docs/
+*.md
+!requirements.txt
+
+# Misc
+.env
+.env.*
+*.log
+*.tmp

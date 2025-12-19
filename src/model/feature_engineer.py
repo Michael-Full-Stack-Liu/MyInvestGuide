@@ -1,6 +1,6 @@
 """
 Stage 3: Feature Engineering
-DVC Pipeline Step: Engineers 78 features for congress trading prediction.
+DVC Pipeline Step: Engineers 72 features for congress trading prediction.
 
 NO Alpha-based features used (to avoid data leakage).
 Alpha_180 is used ONLY to generate Target labels.
@@ -556,7 +556,7 @@ def engineer_features_for_prediction(df: pd.DataFrame, historical_df: pd.DataFra
 # ============================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Stage 3: Feature Engineering (78 features)")
+    parser = argparse.ArgumentParser(description="Stage 3: Feature Engineering (72 features)")
     parser.add_argument("--input", type=str, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_PATH)
     args = parser.parse_args()
@@ -564,7 +564,7 @@ if __name__ == "__main__":
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
     print("=" * 60)
-    print("[Stage 3] FEATURE ENGINEERING (78 features, no Alpha leakage)")
+    print("[Stage 3] FEATURE ENGINEERING (72 features, no Alpha leakage)")
     print("=" * 60)
     
     # Read input artifact

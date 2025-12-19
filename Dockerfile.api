@@ -1,0 +1,54 @@
+# Dockerfile for Congress Trading Prediction API
+# Standalone image - no base image dependency
+# Supports both MLflow-wrapped model and fallback to AutoGluon
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    curl \
+    cargo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+# Core: FastAPI + MLflow for model serving
+# ML: AutoGluon as fallback if MLflow model not available
+
+# Install CPU-only PyTorch FIRST (avoids downloading 2.5GB CUDA version)
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+COPY requirements.txt .
+# Install remaining dependencies (torch/torchvision already satisfied)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source code
+COPY src/api/ ./src/api/
+COPY src/model/ ./src/model/
+COPY src/monitoring/ ./src/monitoring/
+COPY src/__init__.py ./src/
+COPY src/database.py ./src/
+
+# Create directories for volumes
+RUN mkdir -p models data/intermediate data/logs reports
+
+# Environment variables
+ENV MODEL_PATH=/app/models/autogluon
+ENV MLFLOW_MODEL_PATH=/app/models/mlflow_model
+ENV REFERENCE_DATA_PATH=/app/data/intermediate/01_raw_trades.parquet
+ENV PREDICTION_LOG_PATH=/app/data/logs/prediction_log.parquet
+ENV DRIFT_CHECK_INTERVAL_DAYS=7
+ENV DRIFT_THRESHOLD=0.3
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run API
+CMD ["uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

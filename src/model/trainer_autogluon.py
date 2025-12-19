@@ -359,9 +359,27 @@ if __name__ == "__main__":
         with open(args.metrics, 'w') as f:
             json.dump(metrics, f, indent=2, default=str)
         
+        # 9. Log the complete wrapped model to MLflow
+        print(f"\n[MLflow] Registering wrapped model (includes preprocessing)...")
+        try:
+            from .mlflow_wrapper import log_mlflow_model
+            model_info = log_mlflow_model(
+                predictor=predictor,
+                model_dir=args.output_dir,
+                registered_model_name="congress-trading-model"
+            )
+            metrics['mlflow_model_uri'] = model_info.model_uri
+            # Update the metrics file with model URI
+            with open(args.metrics, 'w') as f:
+                json.dump(metrics, f, indent=2, default=str)
+        except Exception as e:
+            print(f"[MLflow] WARNING: Failed to register wrapped model: {e}")
+            print("[MLflow] The model is still saved locally and in MLflow artifacts.")
+        
         print(f"\n[AutoGluon] Model saved to: {args.output_dir}")
         print(f"[AutoGluon] Metrics saved to: {args.metrics}")
         print(f"[AutoGluon] Best model: {predictor.model_best}")
         print(f"[MLflow] Run ID: {run_id}")
         print(f"[MLflow] View at: {MLFLOW_TRACKING_URI}")
         print("[AutoGluon] Complete.\n")
+
